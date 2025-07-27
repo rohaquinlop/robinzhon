@@ -1,6 +1,6 @@
 # robinzhon
 
-A python library to improve the download times (for now) of S3 objects so you can reduce times in your processes.
+A high-performance Python library for fast, concurrent S3 object downloads.
 
 ## Requirements
 
