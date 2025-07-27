@@ -95,7 +95,3 @@ Actual Files on Disk      1000            1000
 ────────────────────────────────────────────────────────────
 robinzhon is 75.8% faster than Python implementation
 ```
-
-## License
-
-[LICENSE](LICENSE)
