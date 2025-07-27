@@ -72,3 +72,7 @@ You can configure the maximum number of concurrent downloads:
 # Allow up to 10 concurrent downloads (default is 5)
 client = S3Downloader("us-east-1", max_concurrent_downloads=10)
 ```
+
+## License
+
+[LICENSE](LICENSE)
