@@ -5,12 +5,43 @@ build-backend = "maturin"
 [project]
 name = "robinzhon"
 requires-python = ">=3.8"
+keywords = [
+    "s3",
+    "aws",
+    "download",
+    "performance",
+    "concurrent",
+    "async",
+    "rust",
+    "fast",
+    "boto3",
+    "cloud",
+    "storage",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: File Transfer Protocol (FTP)",
+    "Topic :: System :: Archiving",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Utilities",
 ]
 dynamic = ["version"]
+
 [tool.maturin]
 features = ["pyo3/extension-module"]
 

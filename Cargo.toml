@@ -2,6 +2,13 @@
 name = "robinzhon"
 version = "0.1.0"
 edition = "2021"
+authors = ["Robin Quintero <rohaquinlop301@gmail.com>"]
+license = "MIT"
+description = "A high-performance Python library for fast, concurrent S3 object downloads"
+readme = "README.md"
+homepage = "https://github.com/rohaquinlop/robinzhon"
+repository = "https://github.com/rohaquinlop/robinzhon"
+exclude = ["tests", ".github"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
