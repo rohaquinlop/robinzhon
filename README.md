@@ -2,6 +2,13 @@
 
 A high-performance Python library for fast, concurrent S3 object downloads.
 
+## Features
+
+- **Fast downloads**: Concurrent downloads using async I/O
+- **Resilient**: Continues downloading even if some files fail
+- **Simple API**: Easy-to-use methods for single and batch downloads
+- **Detailed results**: Get success/failure information for batch operations
+
 ## Requirements
 
 - Python >= 3.8
@@ -53,17 +60,6 @@ result = client.download_multiple_files_with_paths("test-bucket", downloads)
 print(f"Success rate: {result.success_rate():.1%}")
 ```
 
-## Comparison results
-
-![robinzhon in action](imgs/Screenshot%202025-07-26%20at%2022.25.28.png)
-
-## Features
-
-- **Fast downloads**: Concurrent downloads using async I/O
-- **Resilient**: Continues downloading even if some files fail
-- **Simple API**: Easy-to-use methods for single and batch downloads
-- **Detailed results**: Get success/failure information for batch operations
-
 ## Configuration
 
 You can configure the maximum number of concurrent downloads:
@@ -71,6 +67,33 @@ You can configure the maximum number of concurrent downloads:
 ```python
 # Allow up to 10 concurrent downloads (default is 5)
 client = S3Downloader("us-east-1", max_concurrent_downloads=10)
+```
+
+## Performance Test Results
+
+```text
+============================================================
+Performance Test: 1000 files
+============================================================
+
+Testing Python S3Transfer implementation...
+Completed in 40.05s
+
+Testing robinzhon implementation...
+Completed in 9.68s
+
+Performance Results (1000 files)
+────────────────────────────────────────────────────────────
+Metric                    robinzhon       Python          Winner
+────────────────────────────────────────────────────────────
+Duration (seconds)        9.68            40.05           robinzhon (4.1x)
+Throughput (files/sec)    103.3           25.0            robinzhon
+Success Rate (%)          100.0           100.0           robinzhon
+Strict Success Rate (%)   100.0           100.0           robinzhon
+Files Downloaded          1000            1000
+Actual Files on Disk      1000            1000
+────────────────────────────────────────────────────────────
+robinzhon is 75.8% faster than Python implementation
 ```
 
 ## License
