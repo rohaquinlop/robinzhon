@@ -220,7 +220,7 @@ def test_performance_comparison(file_count):
             print(f"Failed: {e}")
             pytest.skip(f"Python test failed: {e}")
 
-        print("\nTesting robinzhon (Rust) implementation...")
+        print("\nTesting robinzhon implementation...")
         rust_metrics = PerformanceMetrics("robinzhon")
         rust_metrics.start()
 
@@ -308,20 +308,6 @@ def test_performance_comparison(file_count):
                 f"robinzhon is {decline:.1f}% slower than Python implementation"
             )
 
-        print("\nPerformance insights:")
-        print(
-            "   - robinzhon uses async I/O which should excel with many concurrent downloads"
-        )
-        print(
-            "   - Python uses ThreadPoolExecutor which may have GIL limitations"
-        )
-        print(
-            "   - Network latency and S3 response times affect both implementations"
-        )
-        print(
-            "   - Strict Success Rate verifies files actually exist on disk (more reliable)"
-        )
-
 
 @pytest.mark.performance
 def test_quick_performance_check():
@@ -345,7 +331,7 @@ def test_quick_performance_check():
         rust_downloads = create_download_paths(test_data, rust_dir)
         python_downloads = create_download_paths(test_data, python_dir)
 
-        print("\n🦀 Testing robinzhon (Rust) implementation...")
+        print("\nTesting robinzhon implementation...")
         rust_metrics = PerformanceMetrics("robinzhon")
         rust_metrics.start()
 
@@ -449,14 +435,3 @@ def test_quick_performance_check():
             print(
                 f"robinzhon is {decline:.1f}% slower than Python implementation"
             )
-
-        print("\nPerformance insights:")
-        print(
-            "   - robinzhon uses async I/O which should excel with many concurrent downloads"
-        )
-        print(
-            "   - Python uses ThreadPoolExecutor which may have GIL limitations"
-        )
-        print(
-            "   - Network latency and S3 response times affect both implementations"
-        )
