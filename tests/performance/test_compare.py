@@ -208,7 +208,7 @@ def test_performance_comparison(file_count):
         python_metrics.start()
 
         try:
-            python_downloader = PythonS3Downloader("us-east-1", max_workers=8)
+            python_downloader = PythonS3Downloader("us-east-1", max_workers=20)
             python_results = (
                 python_downloader.download_multiple_files_with_paths(
                     bucket_name, python_downloads
@@ -351,7 +351,7 @@ def test_quick_performance_check():
         python_metrics.start()
 
         try:
-            python_downloader = PythonS3Downloader("us-east-1", max_workers=8)
+            python_downloader = PythonS3Downloader("us-east-1", max_workers=20)
             python_results = (
                 python_downloader.download_multiple_files_with_paths(
                     bucket_name, python_downloads
