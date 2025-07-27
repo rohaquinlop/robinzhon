@@ -71,3 +71,4 @@ docs/_build/
 # Pyenv
 .python-version
 .env
+objects_and_keys.csv
