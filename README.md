@@ -76,22 +76,26 @@ client = S3Downloader("us-east-1", max_concurrent_downloads=10)
 Performance Test: 1000 files
 ============================================================
 
+Initializing downloaders...
+
 Testing Python S3Transfer implementation...
-Completed in 40.05s
+Download completed in 24.96s
+Verifying Python downloads...
 
 Testing robinzhon implementation...
-Completed in 9.68s
+Download completed in 9.66s
+Verifying robinzhon downloads...
 
-Performance Results (1000 files)
+Performance Results (1000 files, 20 workers)
 ────────────────────────────────────────────────────────────
 Metric                    robinzhon       Python          Winner
 ────────────────────────────────────────────────────────────
-Duration (seconds)        9.68            40.05           robinzhon (4.1x)
-Throughput (files/sec)    103.3           25.0            robinzhon
+Duration (seconds)        9.66            24.96           robinzhon (2.6x)
+Throughput (files/sec)    103.6           40.1            robinzhon
 Success Rate (%)          100.0           100.0           robinzhon
 Strict Success Rate (%)   100.0           100.0           robinzhon
 Files Downloaded          1000            1000
 Actual Files on Disk      1000            1000
 ────────────────────────────────────────────────────────────
-robinzhon is 75.8% faster than Python implementation
+robinzhon is 61.3% faster (2.58x speedup)
 ```

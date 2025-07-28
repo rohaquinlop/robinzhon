@@ -8,9 +8,8 @@ from typing import List, Tuple
 
 import boto3
 import pytest
-from boto3.s3.transfer import S3Transfer
-
 import robinzhon
+from boto3.s3.transfer import S3Transfer
 
 
 class PythonS3Downloader:
@@ -28,7 +27,6 @@ class PythonS3Downloader:
         """Download multiple files using ThreadPoolExecutor for concurrent downloads."""
         successful = []
         failed = []
-        all_target_paths = [local_path for _, local_path in downloads]
 
         def download_single(
             object_key: str, local_path: str
@@ -61,11 +59,6 @@ class PythonS3Downloader:
                 except Exception:
                     failed.append(obj_key)
 
-        actual_files_count = self._count_existing_files(all_target_paths)
-        strict_success_rate = (
-            actual_files_count / len(downloads) if downloads else 0
-        )
-
         return {
             "successful": successful,
             "failed": failed,
@@ -73,9 +66,20 @@ class PythonS3Downloader:
             "success_rate": len(successful) / len(downloads)
             if downloads
             else 0,
-            "strict_success_rate": strict_success_rate,
-            "actual_files_count": actual_files_count,
         }
+
+    def verify_downloads(
+        self, results: dict, all_target_paths: List[str]
+    ) -> dict:
+        """Verify downloaded files exist and have non-zero size. Run this outside of timing."""
+        actual_files_count = self._count_existing_files(all_target_paths)
+        strict_success_rate = (
+            actual_files_count / results["total"] if results["total"] else 0
+        )
+
+        results["strict_success_rate"] = strict_success_rate
+        results["actual_files_count"] = actual_files_count
+        return results
 
     def _count_existing_files(self, file_paths: List[str]) -> int:
         """Count how many files actually exist on disk with non-zero size."""
@@ -95,6 +99,7 @@ class PerformanceMetrics:
         self.end_time = None
         self.duration = None
         self.results = None
+        self.verification_data = None
 
     def start(self):
         self.start_time = time.time()
@@ -103,6 +108,13 @@ class PerformanceMetrics:
         self.end_time = time.time()
         self.duration = self.end_time - self.start_time
         self.results = results
+
+    def set_verification_data(self, actual_count: int, strict_rate: float):
+        """Set verification data calculated outside of timing."""
+        self.verification_data = {
+            "actual_files_count": actual_count,
+            "strict_success_rate": strict_rate,
+        }
 
     def throughput(self) -> float:
         """Files per second."""
@@ -125,7 +137,9 @@ class PerformanceMetrics:
 
     def strict_success_rate(self) -> float:
         """Strict success rate as percentage (based on actual file counts)."""
-        if (
+        if self.verification_data:
+            return self.verification_data["strict_success_rate"] * 100
+        elif (
             isinstance(self.results, dict)
             and "strict_success_rate" in self.results
         ):
@@ -142,7 +156,9 @@ class PerformanceMetrics:
 
     def actual_files_count(self) -> int:
         """Number of files that actually exist on disk."""
-        if (
+        if self.verification_data:
+            return self.verification_data["actual_files_count"]
+        elif (
             isinstance(self.results, dict)
             and "actual_files_count" in self.results
         ):
@@ -194,6 +210,7 @@ def test_performance_comparison(file_count):
         pytest.skip("No test data available")
 
     bucket_name = test_data[0][0]
+    max_workers = 20
 
     with tempfile.TemporaryDirectory(
         prefix="robinzhon_test_"
@@ -203,19 +220,40 @@ def test_performance_comparison(file_count):
         rust_downloads = create_download_paths(test_data, rust_dir)
         python_downloads = create_download_paths(test_data, python_dir)
 
+        print("\nInitializing downloaders...")
+        try:
+            python_downloader = PythonS3Downloader(
+                "us-east-1", max_workers=max_workers
+            )
+            rust_downloader = robinzhon.S3Downloader("us-east-1", max_workers)
+        except Exception as e:
+            pytest.skip(f"Failed to initialize downloaders: {e}")
+
         print("\nTesting Python S3Transfer implementation...")
         python_metrics = PerformanceMetrics("Python S3Transfer")
         python_metrics.start()
 
         try:
-            python_downloader = PythonS3Downloader("us-east-1", max_workers=20)
             python_results = (
                 python_downloader.download_multiple_files_with_paths(
                     bucket_name, python_downloads
                 )
             )
             python_metrics.end(python_results)
-            print(f"Completed in {python_metrics.duration:.2f}s")
+            print(f"Download completed in {python_metrics.duration:.2f}s")
+
+            print("Verifying Python downloads...")
+            python_target_paths = [
+                local_path for _, local_path in python_downloads
+            ]
+            python_results = python_downloader.verify_downloads(
+                python_results, python_target_paths
+            )
+            python_metrics.set_verification_data(
+                python_results["actual_files_count"],
+                python_results["strict_success_rate"],
+            )
+
         except Exception as e:
             print(f"Failed: {e}")
             pytest.skip(f"Python test failed: {e}")
@@ -225,17 +263,34 @@ def test_performance_comparison(file_count):
         rust_metrics.start()
 
         try:
-            downloader = robinzhon.S3Downloader("us-east-1", 20)
-            rust_results = downloader.download_multiple_files_with_paths(
+            rust_results = rust_downloader.download_multiple_files_with_paths(
                 bucket_name, rust_downloads
             )
             rust_metrics.end(rust_results)
-            print(f"Completed in {rust_metrics.duration:.2f}s")
+            print(f"Download completed in {rust_metrics.duration:.2f}s")
+
+            print("Verifying robinzhon downloads...")
+            rust_target_paths = [local_path for _, local_path in rust_downloads]
+            rust_actual_count = python_downloader._count_existing_files(
+                rust_target_paths
+            )
+
+            if hasattr(rust_results, "total_count"):
+                total = rust_results.total_count()
+            else:
+                total = len(rust_downloads)
+            rust_strict_rate = rust_actual_count / total if total else 0
+            rust_metrics.set_verification_data(
+                rust_actual_count, rust_strict_rate
+            )
+
         except Exception as e:
             print(f"Failed: {e}")
             pytest.skip(f"robinzhon test failed: {e}")
 
-        print(f"\nPerformance Results ({file_count} files)")
+        print(
+            f"\nPerformance Results ({file_count} files, {max_workers} workers)"
+        )
         print(f"{'─' * 60}")
         print(f"{'Metric':<25} {'robinzhon':<15} {'Python':<15} {'Winner'}")
         print(f"{'─' * 60}")
@@ -292,21 +347,25 @@ def test_performance_comparison(file_count):
         print(f"{'─' * 60}")
 
         if rust_metrics.duration < python_metrics.duration:
-            improvement = (
+            speedup_factor = python_metrics.duration / rust_metrics.duration
+            improvement_percent = (
                 (python_metrics.duration - rust_metrics.duration)
                 / python_metrics.duration
             ) * 100
             print(
-                f"robinzhon is {improvement:.1f}% faster than Python implementation"
+                f"robinzhon is {improvement_percent:.1f}% faster ({speedup_factor:.2f}x speedup)"
             )
-        else:
-            decline = (
+        elif rust_metrics.duration > python_metrics.duration:
+            slowdown_factor = rust_metrics.duration / python_metrics.duration
+            decline_percent = (
                 (rust_metrics.duration - python_metrics.duration)
                 / python_metrics.duration
             ) * 100
             print(
-                f"robinzhon is {decline:.1f}% slower than Python implementation"
+                f"robinzhon is {decline_percent:.1f}% slower ({slowdown_factor:.2f}x slower)"
             )
+        else:
+            print("Both implementations have identical performance")
 
 
 @pytest.mark.performance
@@ -322,6 +381,7 @@ def test_quick_performance_check():
         return
 
     bucket_name = test_data[0][0]
+    max_workers = 8
 
     with tempfile.TemporaryDirectory(
         prefix="robinzhon_test_"
@@ -331,17 +391,26 @@ def test_quick_performance_check():
         rust_downloads = create_download_paths(test_data, rust_dir)
         python_downloads = create_download_paths(test_data, python_dir)
 
+        print("\nInitializing downloaders...")
+        try:
+            python_downloader = PythonS3Downloader(
+                "us-east-1", max_workers=max_workers
+            )
+            rust_downloader = robinzhon.S3Downloader("us-east-1", max_workers)
+        except Exception as e:
+            print(f"Failed to initialize downloaders: {e}")
+            return
+
         print("\nTesting robinzhon implementation...")
         rust_metrics = PerformanceMetrics("robinzhon")
         rust_metrics.start()
 
         try:
-            downloader = robinzhon.S3Downloader("us-east-1")
-            rust_results = downloader.download_multiple_files_with_paths(
+            rust_results = rust_downloader.download_multiple_files_with_paths(
                 bucket_name, rust_downloads
             )
             rust_metrics.end(rust_results)
-            print(f"Completed in {rust_metrics.duration:.2f}s")
+            print(f"Download completed in {rust_metrics.duration:.2f}s")
         except Exception as e:
             print(f"Failed: {e}")
             return
@@ -351,19 +420,38 @@ def test_quick_performance_check():
         python_metrics.start()
 
         try:
-            python_downloader = PythonS3Downloader("us-east-1", max_workers=20)
             python_results = (
                 python_downloader.download_multiple_files_with_paths(
                     bucket_name, python_downloads
                 )
             )
             python_metrics.end(python_results)
-            print(f"Completed in {python_metrics.duration:.2f}s")
+            print(f"Download completed in {python_metrics.duration:.2f}s")
         except Exception as e:
             print(f"Failed: {e}")
             return
 
-        print("\nPerformance Results (5 files)")
+        print("Verifying Python downloads...")
+        python_target_paths = [local_path for _, local_path in python_downloads]
+        python_results = python_downloader.verify_downloads(
+            python_results, python_target_paths
+        )
+        python_metrics.set_verification_data(
+            python_results["actual_files_count"],
+            python_results["strict_success_rate"],
+        )
+
+        print("Verifying robinzhon downloads...")
+        rust_target_paths = [local_path for _, local_path in rust_downloads]
+        rust_actual_count = python_downloader._count_existing_files(
+            rust_target_paths
+        )
+        rust_strict_rate = (
+            rust_actual_count / len(rust_downloads) if rust_downloads else 0
+        )
+        rust_metrics.set_verification_data(rust_actual_count, rust_strict_rate)
+
+        print(f"\nPerformance Results (5 files, {max_workers} workers)")
         print(f"{'─' * 60}")
         print(f"{'Metric':<25} {'robinzhon':<15} {'Python':<15} {'Winner'}")
         print(f"{'─' * 60}")
@@ -420,18 +508,22 @@ def test_quick_performance_check():
         print(f"{'─' * 60}")
 
         if rust_metrics.duration < python_metrics.duration:
-            improvement = (
+            speedup_factor = python_metrics.duration / rust_metrics.duration
+            improvement_percent = (
                 (python_metrics.duration - rust_metrics.duration)
                 / python_metrics.duration
             ) * 100
             print(
-                f"robinzhon is {improvement:.1f}% faster than Python implementation"
+                f"robinzhon is {improvement_percent:.1f}% faster ({speedup_factor:.2f}x speedup)"
             )
-        else:
-            decline = (
+        elif rust_metrics.duration > python_metrics.duration:
+            slowdown_factor = rust_metrics.duration / python_metrics.duration
+            decline_percent = (
                 (rust_metrics.duration - python_metrics.duration)
                 / python_metrics.duration
             ) * 100
             print(
-                f"robinzhon is {decline:.1f}% slower than Python implementation"
+                f"robinzhon is {decline_percent:.1f}% slower ({slowdown_factor:.2f}x slower)"
             )
+        else:
+            print("Both implementations have identical performance")
