@@ -16,8 +16,8 @@ A high-performance Python library for fast, concurrent S3 object downloads.
 ## Installation
 
 ```bash
-pip install robinzhon   # if you uses pip
-uv add robinzhon        # if you uses uv
+pip install robinzhon   # if you use pip
+uv add robinzhon        # if you use uv
 ```
 
 ## Example
