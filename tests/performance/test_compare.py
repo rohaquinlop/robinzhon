@@ -2,18 +2,97 @@ import csv
 import os
 import tempfile
 import time
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Tuple
 
+import aioboto3
 import boto3
 import pytest
 import robinzhon
 from boto3.s3.transfer import S3Transfer
 
 
-class PythonS3Downloader:
-    """Python implementation using S3Transfer with ThreadPoolExecutor for comparison."""
+class AsyncAioboto3Downloader:
+    """Async implementation using aioboto3 for comparison."""
+
+    def __init__(self, region_name: str, max_concurrent: int = 8):
+        self.region_name = region_name
+        self.max_concurrent = max_concurrent
+
+    async def download_multiple_files_with_paths(
+        self, bucket_name: str, downloads: List[Tuple[str, str]]
+    ) -> dict:
+        """Download multiple files using aioboto3 with asyncio semaphore."""
+        successful = []
+        failed = []
+        all_target_paths = [local_path for _, local_path in downloads]
+
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        async def download_single(
+            s3_client, object_key: str, local_path: str
+        ) -> Tuple[bool, str]:
+            async with semaphore:
+                try:
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+                    await s3_client.download_file(
+                        bucket_name, object_key, local_path
+                    )
+                    return True, local_path
+                except Exception:
+                    return False, object_key
+
+        session = aioboto3.Session()
+
+        async with session.client("s3") as s3_client:
+            tasks = []
+
+            for obj_key, local_path in downloads:
+                task = download_single(s3_client, obj_key, local_path)
+                tasks.append(task)
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                failed.append(downloads[i][0])
+            else:
+                success, result_value = result
+                if success:
+                    successful.append(result_value)
+                else:
+                    failed.append(result_value)
+
+        actual_files_count = self._count_existing_files(all_target_paths)
+        strict_success_rate = (
+            actual_files_count / len(downloads) if downloads else 0
+        )
+
+        return {
+            "successful": successful,
+            "failed": failed,
+            "total": len(downloads),
+            "success_rate": len(successful) / len(downloads)
+            if downloads
+            else 0,
+            "strict_success_rate": strict_success_rate,
+            "actual_files_count": actual_files_count,
+        }
+
+    def _count_existing_files(self, file_paths: List[str]) -> int:
+        """Count how many files actually exist on disk with non-zero size."""
+        return sum(
+            1
+            for path in file_paths
+            if os.path.isfile(path) and os.path.getsize(path) > 0
+        )
+
+
+class ThreadedBoto3Downloader:
+    """Threaded implementation using boto3 S3Transfer with ThreadPoolExecutor for comparison."""
 
     def __init__(self, region_name: str, max_workers: int = 8):
         self.region_name = region_name
@@ -197,7 +276,12 @@ def create_download_paths(
 @pytest.mark.parametrize("file_count", [100, 500, 1000])
 def test_performance_comparison(file_count):
     """
-    Compare performance between robinzhon and Python S3Transfer implementations.
+    Compare performance between robinzhon and both Python implementations.
+
+    Compares:
+    - robinzhon (Rust-based async implementation)
+    - threaded boto3 (Python with ThreadPoolExecutor + S3Transfer)
+    - aioboto3 (Python async implementation)
 
     Tests different file counts to see how performance scales.
     """
@@ -212,51 +296,59 @@ def test_performance_comparison(file_count):
     bucket_name = test_data[0][0]
     max_workers = 20
 
-    with tempfile.TemporaryDirectory(
-        prefix="robinzhon_test_"
-    ) as rust_dir, tempfile.TemporaryDirectory(
-        prefix="python_test_"
-    ) as python_dir:
+    with (
+        tempfile.TemporaryDirectory(prefix="robinzhon_test_") as rust_dir,
+        tempfile.TemporaryDirectory(
+            prefix="threaded_boto3_test_"
+        ) as threaded_dir,
+        tempfile.TemporaryDirectory(prefix="aioboto3_test_") as async_dir,
+    ):
         rust_downloads = create_download_paths(test_data, rust_dir)
-        python_downloads = create_download_paths(test_data, python_dir)
+        threaded_downloads = create_download_paths(test_data, threaded_dir)
+        async_downloads = create_download_paths(test_data, async_dir)
 
-        print("\nInitializing downloaders...")
+        print("\nTesting threaded boto3 implementation...")
+        threaded_metrics = PerformanceMetrics("threaded boto3")
+        threaded_metrics.start()
+
         try:
-            python_downloader = PythonS3Downloader(
-                "us-east-1", max_workers=max_workers
+            threaded_downloader = ThreadedBoto3Downloader(
+                "us-east-1", max_workers=20
             )
-            rust_downloader = robinzhon.S3Downloader("us-east-1", max_workers)
-        except Exception as e:
-            pytest.skip(f"Failed to initialize downloaders: {e}")
-
-        print("\nTesting Python S3Transfer implementation...")
-        python_metrics = PerformanceMetrics("Python S3Transfer")
-        python_metrics.start()
-
-        try:
-            python_results = (
-                python_downloader.download_multiple_files_with_paths(
-                    bucket_name, python_downloads
+            threaded_results = (
+                threaded_downloader.download_multiple_files_with_paths(
+                    bucket_name, threaded_downloads
                 )
             )
-            python_metrics.end(python_results)
-            print(f"Download completed in {python_metrics.duration:.2f}s")
-
-            print("Verifying Python downloads...")
-            python_target_paths = [
-                local_path for _, local_path in python_downloads
-            ]
-            python_results = python_downloader.verify_downloads(
-                python_results, python_target_paths
-            )
-            python_metrics.set_verification_data(
-                python_results["actual_files_count"],
-                python_results["strict_success_rate"],
-            )
-
+            threaded_metrics.end(threaded_results)
+            print(f"Completed in {threaded_metrics.duration:.2f}s")
         except Exception as e:
             print(f"Failed: {e}")
-            pytest.skip(f"Python test failed: {e}")
+            pytest.skip(f"Threaded boto3 test failed: {e}")
+
+        print("\nTesting aioboto3 async implementation...")
+        async_metrics = PerformanceMetrics("aioboto3 async")
+        async_metrics.start()
+
+        try:
+            async_downloader = AsyncAioboto3Downloader(
+                "us-east-1", max_concurrent=20
+            )
+            async_results = asyncio.run(
+                async_downloader.download_multiple_files_with_paths(
+                    bucket_name, async_downloads
+                )
+            )
+            async_metrics.end(async_results)
+            print(f"Completed in {async_metrics.duration:.2f}s")
+        except Exception as e:
+            print(f"Failed: {e}")
+            pytest.skip(f"aioboto3 test failed: {e}")
+
+        try:
+            rust_downloader = robinzhon.S3Downloader("us-east-1", max_workers)
+        except Exception as e:
+            pytest.skip(f"Failed to initialize robinzhon downloader: {e}")
 
         print("\nTesting robinzhon implementation...")
         rust_metrics = PerformanceMetrics("robinzhon")
@@ -271,7 +363,7 @@ def test_performance_comparison(file_count):
 
             print("Verifying robinzhon downloads...")
             rust_target_paths = [local_path for _, local_path in rust_downloads]
-            rust_actual_count = python_downloader._count_existing_files(
+            rust_actual_count = threaded_downloader._count_existing_files(
                 rust_target_paths
             )
 
@@ -288,89 +380,95 @@ def test_performance_comparison(file_count):
             print(f"Failed: {e}")
             pytest.skip(f"robinzhon test failed: {e}")
 
+        print(f"\nPerformance Results ({file_count} files)")
+        print(f"{'=' * 80}")
         print(
-            f"\nPerformance Results ({file_count} files, {max_workers} workers)"
+            f"{'Metric':<25} {'robinzhon':<15} {'threaded boto3':<15} {'aioboto3':<15} {'Winner'}"
         )
-        print(f"{'─' * 60}")
-        print(f"{'Metric':<25} {'robinzhon':<15} {'Python':<15} {'Winner'}")
-        print(f"{'─' * 60}")
+        print(f"{'=' * 80}")
 
-        duration_winner = (
-            "robinzhon"
-            if rust_metrics.duration < python_metrics.duration
-            else "Python"
-        )
-        speedup = max(rust_metrics.duration, python_metrics.duration) / min(
-            rust_metrics.duration, python_metrics.duration
-        )
+        durations = {
+            "robinzhon": rust_metrics.duration,
+            "threaded boto3": threaded_metrics.duration,
+            "aioboto3": async_metrics.duration,
+        }
+        duration_winner = min(durations, key=durations.get)
+
         print(
-            f"{'Duration (seconds)':<25} {rust_metrics.duration:<15.2f} {python_metrics.duration:<15.2f} {duration_winner} ({speedup:.1f}x)"
+            f"{'Duration (seconds)':<25} {rust_metrics.duration:<15.2f} {threaded_metrics.duration:<15.2f} {async_metrics.duration:<15.2f} {duration_winner}"
         )
 
         rust_throughput = rust_metrics.throughput()
-        python_throughput = python_metrics.throughput()
-        throughput_winner = (
-            "robinzhon" if rust_throughput > python_throughput else "Python"
-        )
+        threaded_throughput = threaded_metrics.throughput()
+        async_throughput = async_metrics.throughput()
+        throughputs = {
+            "robinzhon": rust_throughput,
+            "threaded boto3": threaded_throughput,
+            "aioboto3": async_throughput,
+        }
+        throughput_winner = max(throughputs, key=throughputs.get)
+
         print(
-            f"{'Throughput (files/sec)':<25} {rust_throughput:<15.1f} {python_throughput:<15.1f} {throughput_winner}"
+            f"{'Throughput (files/sec)':<25} {rust_throughput:<15.1f} {threaded_throughput:<15.1f} {async_throughput:<15.1f} {throughput_winner}"
         )
 
         rust_success = rust_metrics.success_rate()
-        python_success = python_metrics.success_rate()
-        success_winner = (
-            "robinzhon" if rust_success >= python_success else "Python"
-        )
-        print(
-            f"{'Success Rate (%)':<25} {rust_success:<15.1f} {python_success:<15.1f} {success_winner}"
-        )
+        threaded_success = threaded_metrics.success_rate()
+        async_success = async_metrics.success_rate()
+        success_rates = {
+            "robinzhon": rust_success,
+            "threaded boto3": threaded_success,
+            "aioboto3": async_success,
+        }
+        success_winner = max(success_rates, key=success_rates.get)
 
-        rust_strict = rust_metrics.strict_success_rate()
-        python_strict = python_metrics.strict_success_rate()
-        strict_winner = (
-            "robinzhon" if rust_strict >= python_strict else "Python"
-        )
         print(
-            f"{'Strict Success Rate (%)':<25} {rust_strict:<15.1f} {python_strict:<15.1f} {strict_winner}"
+            f"{'Success Rate (%)':<25} {rust_success:<15.1f} {threaded_success:<15.1f} {async_success:<15.1f} {success_winner}"
         )
 
         rust_files = rust_metrics.successful_count()
-        python_files = python_metrics.successful_count()
-        print(f"{'Files Downloaded':<25} {rust_files:<15} {python_files:<15}")
+        threaded_files = threaded_metrics.successful_count()
+        async_files = async_metrics.successful_count()
 
-        rust_actual = rust_metrics.actual_files_count()
-        python_actual = python_metrics.actual_files_count()
         print(
-            f"{'Actual Files on Disk':<25} {rust_actual:<15} {python_actual:<15}"
+            f"{'Files Downloaded':<25} {rust_files:<15} {threaded_files:<15} {async_files:<15}"
         )
 
-        print(f"{'─' * 60}")
+        print(f"{'=' * 80}")
 
-        if rust_metrics.duration < python_metrics.duration:
-            speedup_factor = python_metrics.duration / rust_metrics.duration
-            improvement_percent = (
-                (python_metrics.duration - rust_metrics.duration)
-                / python_metrics.duration
-            ) * 100
-            print(
-                f"robinzhon is {improvement_percent:.1f}% faster ({speedup_factor:.2f}x speedup)"
+        print("\nPerformance Summary:")
+        if duration_winner == "robinzhon":
+            vs_threaded_speedup = (
+                threaded_metrics.duration / rust_metrics.duration
             )
-        elif rust_metrics.duration > python_metrics.duration:
-            slowdown_factor = rust_metrics.duration / python_metrics.duration
-            decline_percent = (
-                (rust_metrics.duration - python_metrics.duration)
-                / python_metrics.duration
-            ) * 100
+            vs_async_speedup = async_metrics.duration / rust_metrics.duration
             print(
-                f"robinzhon is {decline_percent:.1f}% slower ({slowdown_factor:.2f}x slower)"
+                f"robinzhon is {vs_threaded_speedup:.1f}x faster than threaded boto3"
             )
+            print(f"robinzhon is {vs_async_speedup:.1f}x faster than aioboto3")
         else:
-            print("Both implementations have identical performance")
+            print(f"Winner: {duration_winner}")
+            if rust_metrics.duration > threaded_metrics.duration:
+                slowdown_factor = (
+                    rust_metrics.duration / threaded_metrics.duration
+                )
+                print(
+                    f"robinzhon is {slowdown_factor:.1f}x slower than threaded boto3"
+                )
+            if rust_metrics.duration > async_metrics.duration:
+                slowdown_factor = rust_metrics.duration / async_metrics.duration
+                print(
+                    f"robinzhon is {slowdown_factor:.1f}x slower than aioboto3"
+                )
 
 
 @pytest.mark.performance
 def test_quick_performance_check():
-    """Quick performance check with just a few files for development/CI."""
+    """
+    Quick performance check with just a few files for development/CI.
+
+    Compares robinzhon against both threaded boto3 and aioboto3 implementations.
+    """
     print(f"\n{'=' * 60}")
     print("Performance Test: 5 files")
     print(f"{'=' * 60}")
@@ -383,22 +481,60 @@ def test_quick_performance_check():
     bucket_name = test_data[0][0]
     max_workers = 8
 
-    with tempfile.TemporaryDirectory(
-        prefix="robinzhon_test_"
-    ) as rust_dir, tempfile.TemporaryDirectory(
-        prefix="python_test_"
-    ) as python_dir:
+    with (
+        tempfile.TemporaryDirectory(prefix="robinzhon_test_") as rust_dir,
+        tempfile.TemporaryDirectory(
+            prefix="threaded_boto3_test_"
+        ) as threaded_dir,
+        tempfile.TemporaryDirectory(prefix="aioboto3_test_") as async_dir,
+    ):
         rust_downloads = create_download_paths(test_data, rust_dir)
-        python_downloads = create_download_paths(test_data, python_dir)
+        threaded_downloads = create_download_paths(test_data, threaded_dir)
+        async_downloads = create_download_paths(test_data, async_dir)
 
-        print("\nInitializing downloaders...")
+        print("\nTesting threaded boto3 implementation...")
+        threaded_metrics = PerformanceMetrics("threaded boto3")
+        threaded_metrics.start()
+
         try:
-            python_downloader = PythonS3Downloader(
-                "us-east-1", max_workers=max_workers
+            threaded_downloader = ThreadedBoto3Downloader(
+                "us-east-1", max_workers=20
             )
+            threaded_results = (
+                threaded_downloader.download_multiple_files_with_paths(
+                    bucket_name, threaded_downloads
+                )
+            )
+            threaded_metrics.end(threaded_results)
+            print(f"Completed in {threaded_metrics.duration:.2f}s")
+        except Exception as e:
+            print(f"Failed: {e}")
+            return
+
+        print("\nTesting aioboto3 async implementation...")
+        async_metrics = PerformanceMetrics("aioboto3 async")
+        async_metrics.start()
+
+        try:
+            async_downloader = AsyncAioboto3Downloader(
+                "us-east-1", max_concurrent=20
+            )
+            async_results = asyncio.run(
+                async_downloader.download_multiple_files_with_paths(
+                    bucket_name, async_downloads
+                )
+            )
+            async_metrics.end(async_results)
+            print(f"Completed in {async_metrics.duration:.2f}s")
+        except Exception as e:
+            print(f"Failed: {e}")
+            return
+
+        print("\nInitializing robinzhon downloader...")
+        try:
             rust_downloader = robinzhon.S3Downloader("us-east-1", max_workers)
         except Exception as e:
-            print(f"Failed to initialize downloaders: {e}")
+            print(f"Failed to initialize robinzhon downloader: {e}")
             return
 
         print("\nTesting robinzhon implementation...")
@@ -415,115 +551,83 @@ def test_quick_performance_check():
             print(f"Failed: {e}")
             return
 
-        print("\nTesting Python S3Transfer implementation...")
-        python_metrics = PerformanceMetrics("Python S3Transfer")
-        python_metrics.start()
-
-        try:
-            python_results = (
-                python_downloader.download_multiple_files_with_paths(
-                    bucket_name, python_downloads
-                )
-            )
-            python_metrics.end(python_results)
-            print(f"Download completed in {python_metrics.duration:.2f}s")
-        except Exception as e:
-            print(f"Failed: {e}")
-            return
-
-        print("Verifying Python downloads...")
-        python_target_paths = [local_path for _, local_path in python_downloads]
-        python_results = python_downloader.verify_downloads(
-            python_results, python_target_paths
-        )
-        python_metrics.set_verification_data(
-            python_results["actual_files_count"],
-            python_results["strict_success_rate"],
-        )
-
-        print("Verifying robinzhon downloads...")
-        rust_target_paths = [local_path for _, local_path in rust_downloads]
-        rust_actual_count = python_downloader._count_existing_files(
-            rust_target_paths
-        )
-        rust_strict_rate = (
-            rust_actual_count / len(rust_downloads) if rust_downloads else 0
-        )
-        rust_metrics.set_verification_data(rust_actual_count, rust_strict_rate)
-
-        print(f"\nPerformance Results (5 files, {max_workers} workers)")
-        print(f"{'─' * 60}")
-        print(f"{'Metric':<25} {'robinzhon':<15} {'Python':<15} {'Winner'}")
-        print(f"{'─' * 60}")
-
-        duration_winner = (
-            "robinzhon"
-            if rust_metrics.duration < python_metrics.duration
-            else "Python"
-        )
-        speedup = max(rust_metrics.duration, python_metrics.duration) / min(
-            rust_metrics.duration, python_metrics.duration
-        )
+        print("\nPerformance Results (5 files)")
+        print(f"{'=' * 80}")
         print(
-            f"{'Duration (seconds)':<25} {rust_metrics.duration:<15.2f} {python_metrics.duration:<15.2f} {duration_winner} ({speedup:.1f}x)"
+            f"{'Metric':<25} {'robinzhon':<15} {'threaded boto3':<15} {'aioboto3':<15} {'Winner'}"
+        )
+        print(f"{'=' * 80}")
+
+        durations = {
+            "robinzhon": rust_metrics.duration,
+            "threaded boto3": threaded_metrics.duration,
+            "aioboto3": async_metrics.duration,
+        }
+        duration_winner = min(durations, key=durations.get)
+
+        print(
+            f"{'Duration (seconds)':<25} {rust_metrics.duration:<15.2f} {threaded_metrics.duration:<15.2f} {async_metrics.duration:<15.2f} {duration_winner}"
         )
 
         rust_throughput = rust_metrics.throughput()
-        python_throughput = python_metrics.throughput()
-        throughput_winner = (
-            "robinzhon" if rust_throughput > python_throughput else "Python"
-        )
+        threaded_throughput = threaded_metrics.throughput()
+        async_throughput = async_metrics.throughput()
+        throughputs = {
+            "robinzhon": rust_throughput,
+            "threaded boto3": threaded_throughput,
+            "aioboto3": async_throughput,
+        }
+        throughput_winner = max(throughputs, key=throughputs.get)
+
         print(
-            f"{'Throughput (files/sec)':<25} {rust_throughput:<15.1f} {python_throughput:<15.1f} {throughput_winner}"
+            f"{'Throughput (files/sec)':<25} {rust_throughput:<15.1f} {threaded_throughput:<15.1f} {async_throughput:<15.1f} {throughput_winner}"
         )
 
         rust_success = rust_metrics.success_rate()
-        python_success = python_metrics.success_rate()
-        success_winner = (
-            "robinzhon" if rust_success >= python_success else "Python"
-        )
-        print(
-            f"{'Success Rate (%)':<25} {rust_success:<15.1f} {python_success:<15.1f} {success_winner}"
-        )
+        threaded_success = threaded_metrics.success_rate()
+        async_success = async_metrics.success_rate()
+        success_rates = {
+            "robinzhon": rust_success,
+            "threaded boto3": threaded_success,
+            "aioboto3": async_success,
+        }
+        success_winner = max(success_rates, key=success_rates.get)
 
-        rust_strict = rust_metrics.strict_success_rate()
-        python_strict = python_metrics.strict_success_rate()
-        strict_winner = (
-            "robinzhon" if rust_strict >= python_strict else "Python"
-        )
         print(
-            f"{'Strict Success Rate (%)':<25} {rust_strict:<15.1f} {python_strict:<15.1f} {strict_winner}"
+            f"{'Success Rate (%)':<25} {rust_success:<15.1f} {threaded_success:<15.1f} {async_success:<15.1f} {success_winner}"
         )
 
         rust_files = rust_metrics.successful_count()
-        python_files = python_metrics.successful_count()
-        print(f"{'Files Downloaded':<25} {rust_files:<15} {python_files:<15}")
+        threaded_files = threaded_metrics.successful_count()
+        async_files = async_metrics.successful_count()
 
-        rust_actual = rust_metrics.actual_files_count()
-        python_actual = python_metrics.actual_files_count()
         print(
-            f"{'Actual Files on Disk':<25} {rust_actual:<15} {python_actual:<15}"
+            f"{'Files Downloaded':<25} {rust_files:<15} {threaded_files:<15} {async_files:<15}"
         )
 
-        print(f"{'─' * 60}")
+        print(f"{'=' * 80}")
 
-        if rust_metrics.duration < python_metrics.duration:
-            speedup_factor = python_metrics.duration / rust_metrics.duration
-            improvement_percent = (
-                (python_metrics.duration - rust_metrics.duration)
-                / python_metrics.duration
-            ) * 100
-            print(
-                f"robinzhon is {improvement_percent:.1f}% faster ({speedup_factor:.2f}x speedup)"
+        print("\nPerformance Summary:")
+        if duration_winner == "robinzhon":
+            vs_threaded_speedup = (
+                threaded_metrics.duration / rust_metrics.duration
             )
-        elif rust_metrics.duration > python_metrics.duration:
-            slowdown_factor = rust_metrics.duration / python_metrics.duration
-            decline_percent = (
-                (rust_metrics.duration - python_metrics.duration)
-                / python_metrics.duration
-            ) * 100
+            vs_async_speedup = async_metrics.duration / rust_metrics.duration
             print(
-                f"robinzhon is {decline_percent:.1f}% slower ({slowdown_factor:.2f}x slower)"
+                f"robinzhon is {vs_threaded_speedup:.1f}x faster than threaded boto3"
             )
+            print(f"robinzhon is {vs_async_speedup:.1f}x faster than aioboto3")
         else:
-            print("Both implementations have identical performance")
+            print(f"Winner: {duration_winner}")
+            if rust_metrics.duration > threaded_metrics.duration:
+                slowdown_factor = (
+                    rust_metrics.duration / threaded_metrics.duration
+                )
+                print(
+                    f"robinzhon is {slowdown_factor:.1f}x slower than threaded boto3"
+                )
+            if rust_metrics.duration > async_metrics.duration:
+                slowdown_factor = rust_metrics.duration / async_metrics.duration
+                print(
+                    f"robinzhon is {slowdown_factor:.1f}x slower than aioboto3"
+                )
