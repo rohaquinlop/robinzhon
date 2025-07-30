@@ -32,28 +32,29 @@ class AsyncAioboto3Downloader:
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
         async def download_single(
-            session, object_key: str, local_path: str
+            s3_client, object_key: str, local_path: str
         ) -> Tuple[bool, str]:
             async with semaphore:
                 try:
                     os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
-                    async with session.client("s3") as s3:
-                        await s3.download_file(
-                            bucket_name, object_key, local_path
-                        )
+                    await s3_client.download_file(
+                        bucket_name, object_key, local_path
+                    )
                     return True, local_path
                 except Exception:
                     return False, object_key
 
         session = aioboto3.Session()
-        tasks = []
 
-        for obj_key, local_path in downloads:
-            task = download_single(session, obj_key, local_path)
-            tasks.append(task)
+        async with session.client("s3") as s3_client:
+            tasks = []
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            for obj_key, local_path in downloads:
+                task = download_single(s3_client, obj_key, local_path)
+                tasks.append(task)
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for i, result in enumerate(results):
             if isinstance(result, Exception):
@@ -344,7 +345,6 @@ def test_performance_comparison(file_count):
             print(f"Failed: {e}")
             pytest.skip(f"aioboto3 test failed: {e}")
 
-        print("\nInitializing robinzhon downloader...")
         try:
             rust_downloader = robinzhon.S3Downloader("us-east-1", max_workers)
         except Exception as e:
@@ -438,32 +438,28 @@ def test_performance_comparison(file_count):
 
         print("\nPerformance Summary:")
         if duration_winner == "robinzhon":
-            vs_threaded = (
-                (threaded_metrics.duration - rust_metrics.duration)
-                / rust_metrics.duration
-            ) * 100
-            vs_async = (
-                (async_metrics.duration - rust_metrics.duration)
-                / rust_metrics.duration
-            ) * 100
-            print(f"robinzhon is {vs_threaded:.1f}% faster than threaded boto3")
-            print(f"robinzhon is {vs_async:.1f}% faster than aioboto3")
+            vs_threaded_speedup = (
+                threaded_metrics.duration / rust_metrics.duration
+            )
+            vs_async_speedup = async_metrics.duration / rust_metrics.duration
+            print(
+                f"robinzhon is {vs_threaded_speedup:.1f}x faster than threaded boto3"
+            )
+            print(f"robinzhon is {vs_async_speedup:.1f}x faster than aioboto3")
         else:
             print(f"Winner: {duration_winner}")
             if rust_metrics.duration > threaded_metrics.duration:
-                slower_pct = (
-                    (rust_metrics.duration - threaded_metrics.duration)
-                    / threaded_metrics.duration
-                ) * 100
+                slowdown_factor = (
+                    rust_metrics.duration / threaded_metrics.duration
+                )
                 print(
-                    f"robinzhon is {slower_pct:.1f}% slower than threaded boto3"
+                    f"robinzhon is {slowdown_factor:.1f}x slower than threaded boto3"
                 )
             if rust_metrics.duration > async_metrics.duration:
-                slower_pct = (
-                    (rust_metrics.duration - async_metrics.duration)
-                    / async_metrics.duration
-                ) * 100
-                print(f"robinzhon is {slower_pct:.1f}% slower than aioboto3")
+                slowdown_factor = rust_metrics.duration / async_metrics.duration
+                print(
+                    f"robinzhon is {slowdown_factor:.1f}x slower than aioboto3"
+                )
 
 
 @pytest.mark.performance
@@ -613,29 +609,25 @@ def test_quick_performance_check():
 
         print("\nPerformance Summary:")
         if duration_winner == "robinzhon":
-            vs_threaded = (
-                (threaded_metrics.duration - rust_metrics.duration)
-                / rust_metrics.duration
-            ) * 100
-            vs_async = (
-                (async_metrics.duration - rust_metrics.duration)
-                / rust_metrics.duration
-            ) * 100
-            print(f"robinzhon is {vs_threaded:.1f}% faster than threaded boto3")
-            print(f"robinzhon is {vs_async:.1f}% faster than aioboto3")
+            vs_threaded_speedup = (
+                threaded_metrics.duration / rust_metrics.duration
+            )
+            vs_async_speedup = async_metrics.duration / rust_metrics.duration
+            print(
+                f"robinzhon is {vs_threaded_speedup:.1f}x faster than threaded boto3"
+            )
+            print(f"robinzhon is {vs_async_speedup:.1f}x faster than aioboto3")
         else:
             print(f"Winner: {duration_winner}")
             if rust_metrics.duration > threaded_metrics.duration:
-                slower_pct = (
-                    (rust_metrics.duration - threaded_metrics.duration)
-                    / threaded_metrics.duration
-                ) * 100
+                slowdown_factor = (
+                    rust_metrics.duration / threaded_metrics.duration
+                )
                 print(
-                    f"robinzhon is {slower_pct:.1f}% slower than threaded boto3"
+                    f"robinzhon is {slowdown_factor:.1f}x slower than threaded boto3"
                 )
             if rust_metrics.duration > async_metrics.duration:
-                slower_pct = (
-                    (rust_metrics.duration - async_metrics.duration)
-                    / async_metrics.duration
-                ) * 100
-                print(f"robinzhon is {slower_pct:.1f}% slower than aioboto3")
+                slowdown_factor = rust_metrics.duration / async_metrics.duration
+                print(
+                    f"robinzhon is {slowdown_factor:.1f}x slower than aioboto3"
+                )
