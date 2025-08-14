@@ -1,16 +1,17 @@
 from typing import List, Tuple
 
-class DownloadResults:
-    """
-    Results of a batch download operation.
 
-    This class contains the results of downloading multiple files, with separate
-    lists for successful and failed downloads, plus utility methods for checking
+class Results:
+    """
+    Results of a task operation.
+
+    This class contains the results of downloading/uploading multiple files, with separate
+    lists for successful and failed downloads/uploads, plus utility methods for checking
     the overall status.
 
     Attributes:
-        successful: List of local file paths where files were successfully downloaded
-        failed: List of S3 object keys that failed to download
+        successful: List of local file paths where files were successfully downloaded/uploaded
+        failed: List of S3 object keys or local paths that failed to download/upload
     """
 
     successful: List[str]
@@ -18,11 +19,11 @@ class DownloadResults:
 
     def __init__(self, successful: List[str], failed: List[str]) -> None:
         """
-        Initialize download results.
+        Initialize results.
 
         Args:
-            successful: List of successfully downloaded file paths
-            failed: List of failed S3 object keys
+            successful: List of successfully downloaded/uploaded file paths
+            failed: List of failed S3 object keys or local paths
         """
         ...
 
@@ -91,6 +92,7 @@ class DownloadResults:
         """Developer representation showing counts."""
         ...
 
+
 class S3Config:
     """
     Internal AWS S3 configuration class.
@@ -100,6 +102,7 @@ class S3Config:
     """
 
     ...
+
 
 class S3Downloader:
     """
@@ -115,9 +118,7 @@ class S3Downloader:
         './local-file.txt'
     """
 
-    def __init__(
-        self, region_name: str, max_concurrent_downloads: int = 5
-    ) -> None:
+    def __init__(self, region_name: str, max_concurrent_downloads: int = 5) -> None:
         """
         Initialize the S3 downloader with the specified AWS region.
 
@@ -162,7 +163,7 @@ class S3Downloader:
 
     def download_multiple_files(
         self, bucket_name: str, object_keys: List[str], base_directory: str
-    ) -> DownloadResults:
+    ) -> Results:
         """
         Download multiple files from S3 concurrently to a base directory.
 
@@ -215,7 +216,7 @@ class S3Downloader:
 
     def download_multiple_files_with_paths(
         self, bucket_name: str, downloads: List[Tuple[str, str]]
-    ) -> DownloadResults:
+    ) -> Results:
         """
         Download multiple files from S3 concurrently with custom local paths.
 

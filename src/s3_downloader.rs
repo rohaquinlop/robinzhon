@@ -1,95 +1,16 @@
 use std::{fs::File, io::Write, path::Path};
 
-use aws_config::{BehaviorVersion, Region};
-use aws_sdk_s3::{self as s3};
+use crate::results::{Results, RustOperationResult};
+use crate::s3_config::S3Config;
 use futures::stream::{self, StreamExt};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::{pyclass, pymethods, PyResult};
-
-#[derive(Debug)]
-pub struct DownloadResult {
-    pub successful_downloads: Vec<String>,
-    pub failed_downloads: Vec<(String, String)>, // (object_key, error_message)
-}
-
-#[pyclass]
-#[derive(Debug, Clone)]
-pub struct DownloadResults {
-    #[pyo3(get)]
-    pub successful: Vec<String>,
-    #[pyo3(get)]
-    pub failed: Vec<String>,
-}
-
-#[pymethods]
-impl DownloadResults {
-    #[new]
-    fn new(successful: Vec<String>, failed: Vec<String>) -> Self {
-        Self { successful, failed }
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "DownloadResults(successful={}, failed={})",
-            self.successful.len(),
-            self.failed.len()
-        )
-    }
-
-    fn __str__(&self) -> String {
-        format!(
-            "DownloadResults: {} successful, {} failed",
-            self.successful.len(),
-            self.failed.len()
-        )
-    }
-
-    fn is_complete_success(&self) -> bool {
-        self.failed.is_empty()
-    }
-
-    fn has_success(&self) -> bool {
-        !self.successful.is_empty()
-    }
-
-    fn has_failures(&self) -> bool {
-        !self.failed.is_empty()
-    }
-
-    fn total_count(&self) -> usize {
-        self.successful.len() + self.failed.len()
-    }
-
-    fn success_rate(&self) -> f64 {
-        if self.total_count() == 0 {
-            0.0
-        } else {
-            self.successful.len() as f64 / self.total_count() as f64
-        }
-    }
-}
-
-#[pyclass]
-pub struct S3Config {
-    client: s3::Client,
-}
+use rayon::prelude::*;
 
 #[pyclass]
 pub struct S3Downloader {
     s3_config: S3Config,
     max_concurrent_downloads: usize,
-}
-
-impl S3Config {
-    pub async fn new(region_name: String) -> Self {
-        let config = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new(region_name))
-            .load()
-            .await;
-        let client = s3::Client::new(&config);
-
-        Self { client }
-    }
 }
 
 impl S3Downloader {
@@ -134,7 +55,7 @@ impl S3Downloader {
         bucket_name: &str,
         object_keys: Vec<String>,
         base_directory: &str,
-    ) -> Result<DownloadResult, String> {
+    ) -> Result<RustOperationResult, String> {
         std::fs::create_dir_all(base_directory)
             .map_err(|e| format!("Failed to create directory '{}': {}", base_directory, e))?;
 
@@ -170,29 +91,26 @@ impl S3Downloader {
             .collect()
             .await;
 
-        let mut successful_downloads = Vec::new();
-        let mut failed_downloads = Vec::new();
+        let successful: Vec<String> = results
+            .par_iter()
+            .filter(|(success, _)| matches!(success, Some(_path)))
+            .map(|(success, _)| success.clone().unwrap())
+            .collect();
 
-        for (success, failure) in results {
-            if let Some(path) = success {
-                successful_downloads.push(path);
-            }
-            if let Some((key, error)) = failure {
-                failed_downloads.push((key, error));
-            }
-        }
+        let failed: Vec<(String, String)> = results
+            .par_iter()
+            .filter(|(_, failure)| matches!(failure, Some((_key, _error))))
+            .map(|(_, failure)| failure.clone().unwrap())
+            .collect();
 
-        Ok(DownloadResult {
-            successful_downloads,
-            failed_downloads,
-        })
+        Ok(RustOperationResult { successful, failed })
     }
 
     async fn download_files_concurrent_with_paths(
         &self,
         bucket_name: &str,
         downloads: Vec<(String, String)>,
-    ) -> Result<DownloadResult, String> {
+    ) -> Result<RustOperationResult, String> {
         let bucket_name = bucket_name.to_string();
 
         let download_futures = downloads.iter().map(|(object_key, local_path)| {
@@ -228,22 +146,19 @@ impl S3Downloader {
             .collect()
             .await;
 
-        let mut successful_downloads = Vec::new();
-        let mut failed_downloads = Vec::new();
+        let successful: Vec<String> = results
+            .par_iter()
+            .filter(|(success, _)| matches!(success, Some(_path)))
+            .map(|(success, _)| success.clone().unwrap())
+            .collect();
 
-        for (success, failure) in results {
-            if let Some(path) = success {
-                successful_downloads.push(path);
-            }
-            if let Some((key, error)) = failure {
-                failed_downloads.push((key, error));
-            }
-        }
+        let failed: Vec<(String, String)> = results
+            .par_iter()
+            .filter(|(_, failure)| matches!(failure, Some((_key, _error))))
+            .map(|(_, failure)| failure.clone().unwrap())
+            .collect();
 
-        Ok(DownloadResult {
-            successful_downloads,
-            failed_downloads,
-        })
+        Ok(RustOperationResult { successful, failed })
     }
 }
 
@@ -282,7 +197,7 @@ impl S3Downloader {
                 .await
         });
 
-        result.map_err(|e| PyRuntimeError::new_err(e))
+        result.map_err(PyRuntimeError::new_err)
     }
 
     pub fn download_multiple_files(
@@ -290,7 +205,7 @@ impl S3Downloader {
         bucket_name: &str,
         object_keys: Vec<String>,
         base_directory: &str,
-    ) -> PyResult<DownloadResults> {
+    ) -> PyResult<Results> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -306,25 +221,22 @@ impl S3Downloader {
         match result {
             Ok(download_result) => {
                 let failed_keys: Vec<String> = download_result
-                    .failed_downloads
+                    .failed
                     .iter()
                     .map(|(key, _error)| key.clone())
                     .collect();
 
-                if !download_result.failed_downloads.is_empty() {
+                if !download_result.failed.is_empty() {
                     eprintln!(
                         "Warning: {} downloads failed:",
-                        download_result.failed_downloads.len()
+                        download_result.failed.len()
                     );
-                    for (key, error) in &download_result.failed_downloads {
+                    for (key, error) in &download_result.failed {
                         eprintln!("  {}: {}", key, error);
                     }
                 }
 
-                Ok(DownloadResults::new(
-                    download_result.successful_downloads,
-                    failed_keys,
-                ))
+                Ok(Results::new(download_result.successful, failed_keys))
             }
             Err(e) => Err(PyRuntimeError::new_err(e)),
         }
@@ -334,7 +246,7 @@ impl S3Downloader {
         &self,
         bucket_name: &str,
         downloads: Vec<(String, String)>,
-    ) -> PyResult<DownloadResults> {
+    ) -> PyResult<Results> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -350,25 +262,22 @@ impl S3Downloader {
         match result {
             Ok(download_result) => {
                 let failed_keys: Vec<String> = download_result
-                    .failed_downloads
+                    .failed
                     .iter()
                     .map(|(key, _error)| key.clone())
                     .collect();
 
-                if !download_result.failed_downloads.is_empty() {
+                if !download_result.failed.is_empty() {
                     eprintln!(
                         "Warning: {} downloads failed:",
-                        download_result.failed_downloads.len()
+                        download_result.failed.len()
                     );
-                    for (key, error) in &download_result.failed_downloads {
+                    for (key, error) in &download_result.failed {
                         eprintln!("  {}: {}", key, error);
                     }
                 }
 
-                Ok(DownloadResults::new(
-                    download_result.successful_downloads,
-                    failed_keys,
-                ))
+                Ok(Results::new(download_result.successful, failed_keys))
             }
             Err(e) => Err(PyRuntimeError::new_err(e)),
         }
