@@ -99,6 +99,12 @@ class S3Config:
 
     This class is used internally by S3Downloader to manage AWS S3 client configuration.
     You typically don't need to interact with this class directly.
+
+    Note:
+        The configuration includes settings like region, access keys, and secret keys,
+        which are essential for authenticating and connecting to AWS S3. Ensure that
+        your AWS credentials are correctly configured in your environment or through
+        the AWS configuration files.
     """
 
     ...
@@ -262,5 +268,50 @@ class S3Downloader:
             ...     print("Some downloads failed, checking what to retry...")
             ...     for failed_key in result.failed:
             ...         print(f"  Retry: {failed_key}")
+        """
+        ...
+
+
+class S3Uploader:
+    """
+    High-performance AWS S3 file uploader with concurrent upload capabilities.
+
+    This mirrors the native `S3Uploader` pyclass provided by the compiled extension.
+
+    Example:
+        >>> uploader = S3Uploader("us-east-1")
+        >>> uploader.upload_file("my-bucket", "dest/key.txt", "./local.txt")
+        './local.txt'
+    """
+
+    def __init__(self, region_name: str, max_concurrent_uploads: int = 5) -> None:
+        """
+        Initialize the S3 uploader.
+
+        Args:
+            region_name: AWS region name (e.g. "us-east-1")
+            max_concurrent_uploads: Maximum concurrent uploads (default=5)
+        """
+        ...
+
+    def upload_file(self, bucket_name: str, object_key: str, local_path: str) -> str:
+        """
+        Upload a single file to S3 and return the provided `local_path` on success.
+
+        Raises RuntimeError on failure.
+        """
+        ...
+
+    def upload_multiple_files(self, bucket_name: str, paths_and_keys: List[Tuple[str, str]]) -> Results:
+        """
+        Upload multiple local files to `bucket_name` concurrently.
+
+        Args:
+            bucket_name: Name of the S3 bucket
+            paths_and_keys: List of tuples (local_path, object_key)
+
+        Returns:
+            A `Results` instance describing successful and failed uploads. The
+            `failed` list contains the local paths that failed to upload.
         """
         ...
