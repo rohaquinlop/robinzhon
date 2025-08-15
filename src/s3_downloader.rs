@@ -1,27 +1,28 @@
-use std::{fs::File, io::Write, path::Path};
+use std::path::Path;
+use std::sync::Arc;
 
 use crate::results::{Results, RustOperationResult};
 use crate::s3_config::S3Config;
 use futures::stream::{self, StreamExt};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::{pyclass, pymethods, PyResult};
-use rayon::prelude::*;
+use tokio::fs::File;
+use tokio::io::{AsyncWriteExt, BufWriter};
 
 #[pyclass]
 pub struct S3Downloader {
-    s3_config: S3Config,
+    s3_config: Arc<S3Config>,
     max_concurrent_downloads: usize,
 }
 
 impl S3Downloader {
     async fn download_single_file(
-        &self,
+        s3_config: Arc<S3Config>,
         bucket_name: &str,
         object_key: &str,
         local_path: &str,
     ) -> Result<String, String> {
-        let mut response = self
-            .s3_config
+        let response = s3_config
             .client
             .get_object()
             .bucket(bucket_name)
@@ -30,42 +31,46 @@ impl S3Downloader {
             .await
             .map_err(|e| format!("Failed to get S3 object '{}': {}", object_key, e))?;
 
-        let mut file = File::create(local_path)
+        let file = File::create(local_path)
+            .await
             .map_err(|e| format!("Failed to create file '{}': {}", local_path, e))?;
 
-        while let Some(bytes) = response.body.try_next().await.map_err(|e| {
+        let mut writer = BufWriter::new(file);
+        let mut body = response.body;
+
+        while let Some(bytes) = body.try_next().await.map_err(|e| {
             format!(
                 "Failed to read S3 response body for '{}': {}",
                 object_key, e
             )
         })? {
-            file.write_all(&bytes)
+            writer
+                .write_all(&bytes)
+                .await
                 .map_err(|e| format!("Failed to write to file '{}': {}", local_path, e))?;
         }
 
-        file.flush()
+        writer
+            .flush()
+            .await
             .map_err(|e| format!("Failed to flush file '{}': {}", local_path, e))?;
-        drop(file);
 
         Ok(local_path.to_string())
     }
 
     async fn download_files_concurrent(
-        &self,
+        s3_config: Arc<S3Config>,
         bucket_name: &str,
         object_keys: Vec<String>,
         base_directory: &str,
+        max_concurrent: usize,
     ) -> Result<RustOperationResult, String> {
-        std::fs::create_dir_all(base_directory)
+        tokio::fs::create_dir_all(base_directory)
+            .await
             .map_err(|e| format!("Failed to create directory '{}': {}", base_directory, e))?;
 
-        let bucket_name = bucket_name.to_string();
-        let base_directory = base_directory.to_string();
-
-        let download_futures = object_keys.iter().map(|object_key| {
-            let bucket_name = bucket_name.clone();
-            let base_directory = base_directory.clone();
-            let object_key = object_key.clone();
+        let results: Vec<_> = stream::iter(object_keys.into_iter().map(|object_key| {
+            let s3_config = Arc::clone(&s3_config);
 
             async move {
                 let file_name = Path::new(&object_key)
@@ -76,87 +81,90 @@ impl S3Downloader {
                 let local_path = Path::new(&base_directory).join(file_name);
                 let local_path_str = local_path.to_string_lossy().to_string();
 
-                match self
-                    .download_single_file(&bucket_name, &object_key, &local_path_str)
-                    .await
+                match Self::download_single_file(
+                    s3_config,
+                    bucket_name,
+                    &object_key,
+                    &local_path_str,
+                )
+                .await
                 {
                     Ok(path) => (Some(path), None),
                     Err(error) => (None, Some((object_key, error))),
                 }
             }
-        });
+        }))
+        .buffer_unordered(max_concurrent)
+        .collect()
+        .await;
 
-        let results: Vec<_> = stream::iter(download_futures)
-            .buffer_unordered(self.max_concurrent_downloads)
-            .collect()
-            .await;
+        let mut successful = Vec::new();
+        let mut failed = Vec::new();
 
-        let successful: Vec<String> = results
-            .par_iter()
-            .filter(|(success, _)| matches!(success, Some(_path)))
-            .map(|(success, _)| success.clone().unwrap())
-            .collect();
-
-        let failed: Vec<(String, String)> = results
-            .par_iter()
-            .filter(|(_, failure)| matches!(failure, Some((_key, _error))))
-            .map(|(_, failure)| failure.clone().unwrap())
-            .collect();
-
+        for (success, error) in results {
+            match (success, error) {
+                (Some(path), None) => successful.push(path),
+                (None, Some((key, error))) => failed.push((key, error)),
+                _ => unreachable!(),
+            }
+        }
         Ok(RustOperationResult { successful, failed })
     }
 
     async fn download_files_concurrent_with_paths(
-        &self,
-        bucket_name: &str,
+        s3_config: Arc<S3Config>,
+        bucket_name: String,
         downloads: Vec<(String, String)>,
+        max_concurrent: usize,
     ) -> Result<RustOperationResult, String> {
-        let bucket_name = bucket_name.to_string();
+        let results: Vec<_> =
+            stream::iter(downloads.into_iter().map(|(object_key, local_path)| {
+                let s3_config = Arc::clone(&s3_config);
+                let bucket_name = bucket_name.clone();
 
-        let download_futures = downloads.iter().map(|(object_key, local_path)| {
-            let bucket_name = bucket_name.clone();
-            let object_key = object_key.clone();
-            let local_path = local_path.clone();
-
-            async move {
-                if let Some(parent) = Path::new(&local_path).parent() {
-                    if let Err(e) = std::fs::create_dir_all(parent) {
-                        return (
-                            None,
-                            Some((
-                                object_key,
-                                format!("Failed to create directory '{}': {}", parent.display(), e),
-                            )),
-                        );
+                async move {
+                    if let Some(parent) = Path::new(&local_path).parent() {
+                        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                            return (
+                                None,
+                                Some((
+                                    object_key,
+                                    format!(
+                                        "Failed to create directory '{}': {}",
+                                        parent.display(),
+                                        e
+                                    ),
+                                )),
+                            );
+                        }
+                    }
+                    match Self::download_single_file(
+                        s3_config,
+                        &bucket_name,
+                        &object_key,
+                        &local_path,
+                    )
+                    .await
+                    {
+                        Ok(path) => (Some(path), None),
+                        Err(error) => (None, Some((object_key, error))),
                     }
                 }
-
-                match self
-                    .download_single_file(&bucket_name, &object_key, &local_path)
-                    .await
-                {
-                    Ok(path) => (Some(path), None),
-                    Err(error) => (None, Some((object_key, error))),
-                }
-            }
-        });
-
-        let results: Vec<_> = stream::iter(download_futures)
-            .buffer_unordered(self.max_concurrent_downloads)
+            }))
+            .buffer_unordered(max_concurrent)
             .collect()
             .await;
 
-        let successful: Vec<String> = results
-            .par_iter()
-            .filter(|(success, _)| matches!(success, Some(_path)))
-            .map(|(success, _)| success.clone().unwrap())
-            .collect();
+        let mut successful = Vec::new();
+        let mut failed = Vec::new();
 
-        let failed: Vec<(String, String)> = results
-            .par_iter()
-            .filter(|(_, failure)| matches!(failure, Some((_key, _error))))
-            .map(|(_, failure)| failure.clone().unwrap())
-            .collect();
+        for (success, error) in results {
+            match (success, error) {
+                (Some(path), None) => successful.push(path),
+                (None, Some((key, error))) => failed.push((key, error)),
+                _ => unreachable!(),
+            }
+        }
 
         Ok(RustOperationResult { successful, failed })
     }
@@ -167,117 +175,114 @@ impl S3Downloader {
     #[new]
     #[pyo3(signature = (region_name, max_concurrent_downloads=5))]
     fn new(region_name: &str, max_concurrent_downloads: usize) -> Self {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let s3_config = rt.block_on(S3Config::new(region_name.to_string()));
+        let s3_config = std::thread::spawn({
+            let region_name = region_name.to_string();
+            move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(S3Config::new(region_name))
+            }
+        })
+        .join()
+        .unwrap();
 
         Self {
-            s3_config,
+            s3_config: Arc::new(s3_config),
             max_concurrent_downloads,
         }
     }
 
+    #[pyo3(signature=(bucket_name, object_key, path_to_store))]
     fn download_file(
         &self,
         bucket_name: &str,
         object_key: &str,
         path_to_store: &str,
     ) -> PyResult<String> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to create async runtime: {}", e))
-            })?;
+        let s3_config = Arc::clone(&self.s3_config);
+        let bucket_name = bucket_name.to_string();
+        let object_key = object_key.to_string();
+        let path_to_store = path_to_store.to_string();
 
-        let result = rt.block_on(async {
-            self.download_single_file(bucket_name, object_key, path_to_store)
-                .await
-        });
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create runtime: {}", e)))?;
 
-        result.map_err(PyRuntimeError::new_err)
+        rt.block_on(async move {
+            Self::download_single_file(s3_config, &bucket_name, &object_key, &path_to_store).await
+        })
+        .map_err(PyRuntimeError::new_err)
     }
 
-    pub fn download_multiple_files(
+    #[pyo3(signature = (bucket_name, object_keys, base_directory))]
+    fn download_multiple_files(
         &self,
         bucket_name: &str,
         object_keys: Vec<String>,
         base_directory: &str,
     ) -> PyResult<Results> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to create async runtime: {}", e))
-            })?;
+        let s3_config = Arc::clone(&self.s3_config);
+        let bucket_name = bucket_name.to_string();
+        let base_directory = base_directory.to_string();
+        let max_concurrent = self.max_concurrent_downloads;
 
-        let result = rt.block_on(async {
-            self.download_files_concurrent(bucket_name, object_keys, base_directory)
-                .await
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create runtime: {}", e)))?;
+
+        let result = rt.block_on(async move {
+            Self::download_files_concurrent(
+                s3_config,
+                &bucket_name,
+                object_keys,
+                &base_directory,
+                max_concurrent,
+            )
+            .await
         });
 
         match result {
             Ok(download_result) => {
-                let failed_keys: Vec<String> = download_result
+                let failed: Vec<String> = download_result
                     .failed
                     .iter()
                     .map(|(key, _error)| key.clone())
                     .collect();
 
-                if !download_result.failed.is_empty() {
-                    eprintln!(
-                        "Warning: {} downloads failed:",
-                        download_result.failed.len()
-                    );
-                    for (key, error) in &download_result.failed {
-                        eprintln!("  {}: {}", key, error);
-                    }
-                }
-
-                Ok(Results::new(download_result.successful, failed_keys))
+                Ok(Results::new(download_result.successful, failed))
             }
             Err(e) => Err(PyRuntimeError::new_err(e)),
         }
     }
 
-    pub fn download_multiple_files_with_paths(
+    #[pyo3(signature = (bucket_name, downloads))]
+    fn download_multiple_files_with_paths(
         &self,
         bucket_name: &str,
         downloads: Vec<(String, String)>,
     ) -> PyResult<Results> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to create async runtime: {}", e))
-            })?;
+        let s3_config = Arc::clone(&self.s3_config);
+        let bucket_name = bucket_name.to_string();
+        let max_concurrent = self.max_concurrent_downloads;
 
-        let result = rt.block_on(async {
-            self.download_files_concurrent_with_paths(bucket_name, downloads)
-                .await
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to create runtime: {}", e)))?;
+
+        let result = rt.block_on(async move {
+            Self::download_files_concurrent_with_paths(
+                s3_config,
+                bucket_name,
+                downloads,
+                max_concurrent,
+            )
+            .await
         });
 
         match result {
             Ok(download_result) => {
-                let failed_keys: Vec<String> = download_result
+                let failed = download_result
                     .failed
                     .iter()
                     .map(|(key, _error)| key.clone())
                     .collect();
-
-                if !download_result.failed.is_empty() {
-                    eprintln!(
-                        "Warning: {} downloads failed:",
-                        download_result.failed.len()
-                    );
-                    for (key, error) in &download_result.failed {
-                        eprintln!("  {}: {}", key, error);
-                    }
-                }
-
-                Ok(Results::new(download_result.successful, failed_keys))
+                Ok(Results::new(download_result.successful, failed))
             }
             Err(e) => Err(PyRuntimeError::new_err(e)),
         }
