@@ -1,4 +1,4 @@
-from robinzhon import S3Downloader, DownloadResults
+from robinzhon import S3Downloader, Results
 
 
 def test_basic_download(mocker):
@@ -22,7 +22,7 @@ def test_basic_download(mocker):
 def test_multiple_downloads(mocker):
     """Test multiple files download functionality."""
 
-    mock_results = DownloadResults(
+    mock_results = Results(
         successful=[
             "./object/located/on/different/path",
             "./object/located/on/another/path",
@@ -66,7 +66,7 @@ def test_multiple_downloads(mocker):
 def test_download_with_failures(mocker):
     """Test multiple downloads with some failures."""
 
-    mock_results = DownloadResults(
+    mock_results = Results(
         successful=["./success-file.txt"], failed=["failed-object-key"]
     )
 
@@ -110,11 +110,9 @@ def test_download_failure(mocker):
 
 
 def test_download_results_functionality():
-    """Test DownloadResults class functionality without mocking."""
+    """Test Results class functionality without mocking."""
 
-    success_results = DownloadResults(
-        successful=["file1.txt", "file2.txt"], failed=[]
-    )
+    success_results = Results(successful=["file1.txt", "file2.txt"], failed=[])
 
     assert success_results.is_complete_success()
     assert success_results.has_success()
@@ -122,7 +120,7 @@ def test_download_results_functionality():
     assert success_results.total_count() == 2
     assert success_results.success_rate() == 1.0
 
-    mixed_results = DownloadResults(
+    mixed_results = Results(
         successful=["file1.txt"], failed=["failed_file.txt"]
     )
 
@@ -132,7 +130,7 @@ def test_download_results_functionality():
     assert mixed_results.total_count() == 2
     assert mixed_results.success_rate() == 0.5
 
-    failure_results = DownloadResults(
+    failure_results = Results(
         successful=[], failed=["failed1.txt", "failed2.txt"]
     )
 
