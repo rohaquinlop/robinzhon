@@ -1,102 +1,82 @@
 # robinzhon
 
-A high-performance Python library for fast, concurrent S3 object downloads.
+Minimal, high-performance Python helpers for concurrent S3 object transfers.
 
-## Features
+A small extension that exposes fast, concurrent downloads (and uploads) to Python
+using a Rust implementation optimized for I/O-bound workloads.
 
-- **Fast downloads**: Concurrent downloads using async I/O
-- **Resilient**: Continues downloading even if some files fail
-- **Simple API**: Easy-to-use methods for single and batch downloads
-- **Detailed results**: Get success/failure information for batch operations
+## Install
 
-## Requirements
-
-- Python >= 3.8
-
-## Installation
+- From PyPI: `pip install robinzhon` or `uv add robinzhon`
+- From source (requires Rust + maturin):
 
 ```bash
-pip install robinzhon   # if you use pip
-uv add robinzhon        # if you use uv
+# build and install into active venv
+maturin develop --release
 ```
 
-## Example
+## Quick start
+
+Download a single object:
 
 ```python
 from robinzhon import S3Downloader
 
-# Initialize downloader
-client = S3Downloader("us-east-1")
+d = S3Downloader("us-east-1")
+path = d.download_file("my-bucket", "path/to/object.txt", "./object.txt")
+print(path)  # ./object.txt
+```
 
-# Download a single file
-download_path = client.download_file(
-    "test-bucket", "test-object-key", "./test-object-key"
-)
-# download_path will be the file path where the object was downloaded
+Download many objects into a directory:
 
-# Download multiple files to the same directory
-files_to_download = [
-    "data/file1.csv",
-    "data/file2.json",
-    "logs/app.log"
-]
-result = client.download_multiple_files(
-    "test-bucket", files_to_download, "./downloads"
-)
+```python
+files = ["data/a.csv", "data/b.csv"]
+res = d.download_multiple_files("my-bucket", files, "./downloads")
+print(res.successful)
+print(res.failed)
+```
 
-# Check results
-print(f"Downloaded {len(result.successful)} files successfully")
-print(f"Downloaded files: {result.successful}")
-if result.has_failures():
-    print(f"Failed to download: {result.failed}")
+Upload a single file or multiple files:
 
-# Download files with custom paths
-downloads = [
-    ("data/input.csv", "./processed/input_data.csv"),
-    ("config/settings.json", "./config/app_settings.json"),
-]
-result = client.download_multiple_files_with_paths("test-bucket", downloads)
+```python
+from robinzhon import S3Uploader
 
-print(f"Success rate: {result.success_rate():.1%}")
+u = S3Uploader("us-east-1")
+u.upload_file("my-bucket", "dest/key.txt", "./local.txt")
+paths_and_keys = [("./local1.txt", "key1"), ("./local2.txt", "key2")]
+res = u.upload_multiple_files("my-bucket", paths_and_keys)
+print(res.successful, res.failed)
 ```
 
 ## Configuration
 
-You can configure the maximum number of concurrent downloads:
+- Both `S3Downloader` and `S3Uploader` accept an optional concurrency argument (default 5):
 
 ```python
-# Allow up to 10 concurrent downloads (default is 5)
-client = S3Downloader("us-east-1", max_concurrent_downloads=10)
+S3Downloader("us-east-1", max_concurrent_downloads=10)
+S3Uploader("us-east-1", max_concurrent_uploads=10)
 ```
 
-## Performance Test Results
+## API summary
 
-```text
-============================================================
-Performance Test: 1000 files
-============================================================
+- Results
+    - Attributes: `successful: List[str]`, `failed: List[str]`
+    - Methods: `is_complete_success()`, `has_success()`, `has_failures()`, `total_count()`, `success_rate()`
 
-Testing threaded boto3 implementation...
-Completed in 24.16s
+- S3Downloader(region_name, max_concurrent_downloads=5)
+    - `download_file(bucket, key, local_path) -> str`
+    - `download_multiple_files(bucket, keys, base_dir) -> Results`
+    - `download_multiple_files_with_paths(bucket, [(key, local_path), ...]) -> Results`
 
-Testing aioboto3 async implementation...
-Completed in 27.70s
+- S3Uploader(region_name, max_concurrent_uploads=5)
+    - `upload_file(bucket, key, local_path) -> str`
+    - `upload_multiple_files(bucket, [(local_path, key), ...]) -> Results`
 
-Testing robinzhon implementation...
-Download completed in 10.30s
-Verifying robinzhon downloads...
+## Building & testing
 
-Performance Results (1000 files)
-================================================================================
-Metric                    robinzhon       threaded boto3  aioboto3        Winner
-================================================================================
-Duration (seconds)        10.30           24.16           27.70           robinzhon
-Throughput (files/sec)    97.1            41.4            36.1            robinzhon
-Success Rate (%)          100.0           100.0           100.0           robinzhon
-Files Downloaded          1000            1000            1000
-================================================================================
+- Requires Rust toolchain and `maturin` to build the extension.
+- Tests are simple Python tests that assume the compiled extension is available.
 
-Performance Summary:
-robinzhon is 2.3x faster than threaded boto3
-robinzhon is 2.7x faster than aioboto3
-```
+## License
+
+See the [LICENSE](LICENSE) file in the repository.

@@ -272,6 +272,32 @@ def create_download_paths(
     ]
 
 
+def print_summary(
+    duration_winner: str,
+    threaded_metrics: PerformanceMetrics,
+    async_metrics: PerformanceMetrics,
+    rust_metrics: PerformanceMetrics,
+) -> None:
+    print("\nPerformance Summary:")
+    if duration_winner == "robinzhon":
+        vs_threaded_speedup = threaded_metrics.duration / rust_metrics.duration
+        vs_async_speedup = async_metrics.duration / rust_metrics.duration
+        print(
+            f"robinzhon is {vs_threaded_speedup:.1f}x faster than threaded boto3"
+        )
+        print(f"robinzhon is {vs_async_speedup:.1f}x faster than aioboto3")
+    else:
+        print(f"Winner: {duration_winner}")
+        if rust_metrics.duration > threaded_metrics.duration:
+            slowdown_factor = rust_metrics.duration / threaded_metrics.duration
+            print(
+                f"robinzhon is {slowdown_factor:.1f}x slower than threaded boto3"
+            )
+        if rust_metrics.duration > async_metrics.duration:
+            slowdown_factor = rust_metrics.duration / async_metrics.duration
+            print(f"robinzhon is {slowdown_factor:.1f}x slower than aioboto3")
+
+
 @pytest.mark.performance
 @pytest.mark.parametrize("file_count", [100, 500, 1000])
 def test_performance_comparison(file_count):
@@ -436,30 +462,9 @@ def test_performance_comparison(file_count):
 
         print(f"{'=' * 80}")
 
-        print("\nPerformance Summary:")
-        if duration_winner == "robinzhon":
-            vs_threaded_speedup = (
-                threaded_metrics.duration / rust_metrics.duration
-            )
-            vs_async_speedup = async_metrics.duration / rust_metrics.duration
-            print(
-                f"robinzhon is {vs_threaded_speedup:.1f}x faster than threaded boto3"
-            )
-            print(f"robinzhon is {vs_async_speedup:.1f}x faster than aioboto3")
-        else:
-            print(f"Winner: {duration_winner}")
-            if rust_metrics.duration > threaded_metrics.duration:
-                slowdown_factor = (
-                    rust_metrics.duration / threaded_metrics.duration
-                )
-                print(
-                    f"robinzhon is {slowdown_factor:.1f}x slower than threaded boto3"
-                )
-            if rust_metrics.duration > async_metrics.duration:
-                slowdown_factor = rust_metrics.duration / async_metrics.duration
-                print(
-                    f"robinzhon is {slowdown_factor:.1f}x slower than aioboto3"
-                )
+        print_summary(
+            duration_winner, threaded_metrics, async_metrics, rust_metrics
+        )
 
 
 @pytest.mark.performance
