@@ -4,7 +4,13 @@ build-backend = "maturin"
 
 [project]
 name = "robinzhon"
+description = "Minimal, high-performance Python helpers for concurrent S3 object transfers"
+readme = "README.md"
 requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Robin Quintero", email = "rohaquinlop301@gmail.com"}
+]
 keywords = [
     "s3",
     "aws",

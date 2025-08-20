@@ -1,10 +1,10 @@
 [package]
 name = "robinzhon"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Robin Quintero <rohaquinlop301@gmail.com>"]
 license = "MIT"
-description = "A high-performance Python library for fast, concurrent S3 object downloads"
+description = "Minimal, high-performance Python helpers for concurrent S3 object transfers"
 readme = "README.md"
 homepage = "https://github.com/rohaquinlop/robinzhon"
 repository = "https://github.com/rohaquinlop/robinzhon"
