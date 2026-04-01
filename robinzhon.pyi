@@ -1,5 +1,4 @@
-from typing import List, Tuple
-
+from typing import List, Optional, Tuple
 
 class Results:
     """
@@ -92,7 +91,6 @@ class Results:
         """Developer representation showing counts."""
         ...
 
-
 class S3Config:
     """
     Internal AWS S3 configuration class.
@@ -109,7 +107,6 @@ class S3Config:
 
     ...
 
-
 class S3Downloader:
     """
     High-performance AWS S3 file downloader with concurrent download capabilities.
@@ -124,16 +121,31 @@ class S3Downloader:
         './local-file.txt'
     """
 
-    def __init__(self, region_name: str, max_concurrent_downloads: int = 5) -> None:
+    def __init__(
+        self,
+        region_name: str,
+        max_concurrent_downloads: int = 5,
+        access_key_id: Optional[str] = None,
+        secret_access_key: Optional[str] = None,
+        session_token: Optional[str] = None,
+    ) -> None:
         """
         Initialize the S3 downloader with the specified AWS region.
 
         Args:
             region_name: AWS region name (e.g., "us-east-1", "eu-west-1")
             max_concurrent_downloads: Maximum concurrent downloads from S3. Default = 5
+            access_key_id: AWS access key ID. If not provided, uses the default credential chain.
+            secret_access_key: AWS secret access key. Required if access_key_id is provided.
+            session_token: AWS session token for temporary credentials. Optional.
 
         Example:
             >>> downloader = S3Downloader("us-east-1")
+            >>> downloader = S3Downloader(
+            ...     "us-east-1",
+            ...     access_key_id="AKIA...",
+            ...     secret_access_key="wJalr...",
+            ... )
         """
         ...
 
@@ -271,7 +283,6 @@ class S3Downloader:
         """
         ...
 
-
 class S3Uploader:
     """
     High-performance AWS S3 file uploader with concurrent upload capabilities.
@@ -284,17 +295,29 @@ class S3Uploader:
         './local.txt'
     """
 
-    def __init__(self, region_name: str, max_concurrent_uploads: int = 5) -> None:
+    def __init__(
+        self,
+        region_name: str,
+        max_concurrent_uploads: int = 5,
+        access_key_id: Optional[str] = None,
+        secret_access_key: Optional[str] = None,
+        session_token: Optional[str] = None,
+    ) -> None:
         """
         Initialize the S3 uploader.
 
         Args:
             region_name: AWS region name (e.g. "us-east-1")
             max_concurrent_uploads: Maximum concurrent uploads (default=5)
+            access_key_id: AWS access key ID. If not provided, uses the default credential chain.
+            secret_access_key: AWS secret access key. Required if access_key_id is provided.
+            session_token: AWS session token for temporary credentials. Optional.
         """
         ...
 
-    def upload_file(self, bucket_name: str, object_key: str, local_path: str) -> str:
+    def upload_file(
+        self, bucket_name: str, object_key: str, local_path: str
+    ) -> str:
         """
         Upload a single file to S3 and return the provided `local_path` on success.
 
@@ -302,7 +325,9 @@ class S3Uploader:
         """
         ...
 
-    def upload_multiple_files(self, bucket_name: str, paths_and_keys: List[Tuple[str, str]]) -> Results:
+    def upload_multiple_files(
+        self, bucket_name: str, paths_and_keys: List[Tuple[str, str]]
+    ) -> Results:
         """
         Upload multiple local files to `bucket_name` concurrently.
 
