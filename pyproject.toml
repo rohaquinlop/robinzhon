@@ -51,6 +51,7 @@ dynamic = ["version"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+include = [{ path = "py.typed", format = "wheel" }]
 
 [dependency-groups]
 dev = [

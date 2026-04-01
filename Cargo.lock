@@ -1909,7 +1909,7 @@ dependencies = [
 
 [[package]]
 name = "robinzhon"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
